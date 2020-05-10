@@ -4,7 +4,7 @@ using System.Linq;
 using csDelaunay;
 using UnityEngine;
 
-public class CyclesFinder : MonoBehaviour
+public class CyclesFinder
 {
     private bool[,] adjacency;
 
@@ -12,12 +12,13 @@ public class CyclesFinder : MonoBehaviour
 
     private List<VertexData> vertexDatas;
 
-    public List<Vector2f> track;
 
-    public List<List<int>> possibleTracks;
-    public List<List<Vector2f>> possibleRealTracks;
+    public CyclesFinder(List<Edge> edges)
+    {
+        SetVertices(edges);
+    }
 
-    public void SetVertices(List<Edge> edges)
+    private void SetVertices(List<Edge> edges)
     {
         float threshold = 0.5f;
         vertexDatas = new List<VertexData>();
@@ -90,8 +91,13 @@ public class CyclesFinder : MonoBehaviour
         Debug.Log(adjacency);
     }
 
-    public void CalculateVertexDatas()
+    private int CalculateVertexDatas(List<int> bannedStartPoints)
     {
+        foreach(VertexData vertexData in vertexDatas)
+        {
+            vertexData.parentHistory = new List<int>();
+            vertexData.stepFromHome = null;
+        }
         int startingVertex = 0;
         for (int i = 0; i < vertices.Count; i++)
         {
@@ -100,7 +106,11 @@ public class CyclesFinder : MonoBehaviour
             if (connections == 3)
             {
                 startingVertex = i;
-                break;
+                if (!bannedStartPoints.Contains(startingVertex))
+                {
+                    Debug.Log("Starting vertex " + startingVertex);
+                    break;
+                }
             }
         }
 
@@ -136,12 +146,43 @@ public class CyclesFinder : MonoBehaviour
             processedVertices = newProcessedVertices;
         }
 
-        List<List<int>> tracks = new List<List<int>>();
-        VertexData result;
+        return startingVertex;
+    }
 
+    public Track FindSuitableTrack()
+    {
+        List<int> bannedStartingPoints = new List<int>();
+        int currentStartingPoint = CalculateVertexDatas(bannedStartingPoints);
+        List<Track> tracks = FindPossibleTracks();
+
+        while (tracks.Count == 0 && bannedStartingPoints.Count < vertices.Count)
+        {
+            Debug.Log("Cannot find tracks starting in this vertex, changing start vertex");
+            bannedStartingPoints.Add(currentStartingPoint);
+            currentStartingPoint = CalculateVertexDatas(bannedStartingPoints);
+            tracks = FindPossibleTracks();
+        }
+
+        if (tracks.Count == 0)
+        {
+            Debug.Log("Cannot find track with this pool of voronoi cells, try with different settings");
+            return null;
+        }
+
+        Debug.Log("Successfully found " + tracks.Count + " viable tracks");
+
+        return tracks.OrderByDescending(i => i.baseLength).FirstOrDefault();
+    }
+
+    private List<Track> FindPossibleTracks()
+    {
+        List<List<int>> tracks = new List<List<int>>();
+        List<Track> realTracks = new List<Track>();
         List<VertexData> copy = new List<VertexData>(vertexDatas);
+
         VertexData furthestVertex = copy.OrderByDescending(i => i.stepFromHome).FirstOrDefault();
         bool searching = true;
+
         while (searching)
         {
             List<int> neighbours = GetNeighbours(furthestVertex.index);
@@ -152,8 +193,6 @@ public class CyclesFinder : MonoBehaviour
                 {
                     if (vertexDatas[neighbour].parentHistory[1] != furthestVertex.parentHistory[1])
                     {
-                        result = vertexDatas[neighbour];
-
                         List<List<int>> possibleWays1 = FindPossibleWays(furthestVertex.index);
                         List<List<int>> possibleWays2 = FindPossibleWays(neighbour);
 
@@ -161,24 +200,18 @@ public class CyclesFinder : MonoBehaviour
                         {
                             foreach (List<int> way2 in possibleWays2)
                             {
-                                
                                 List<int> newTrack = new List<int>(way1);
                                 for (int i = 0; i < way2.Count - 1; i++)
                                 {
                                     newTrack.Add(way2[way2.Count - i - 1]);
                                 }
-                                if(newTrack.Count == newTrack.Distinct().Count())
-                                {
-                                    newTrack.Insert(0,way2[0]);
-                                    newTrack.Add(way1[0]);
 
+                                if (newTrack.Count == newTrack.Distinct().Count())
+                                {
                                     tracks.Add(newTrack);
                                 }
-
-                               
                             }
                         }
-                        
                     }
                 }
             }
@@ -192,54 +225,19 @@ public class CyclesFinder : MonoBehaviour
             furthestVertex = copy.OrderByDescending(i => i.stepFromHome).FirstOrDefault();
         }
 
-        this.track = new List<Vector2f>();
-        if (tracks.Count > 0)
+        foreach (List<int> subTrack in tracks)
         {
-            possibleRealTracks = new List<List<Vector2f>>();
-            List<int> track = tracks[0];
-
-            foreach (var i in track)
+            List<Vector2f> realTrack = new List<Vector2f>();
+            foreach (var z in subTrack)
             {
-                this.track.Add(vertices[i]);
+                realTrack.Add(vertices[z]);
             }
 
-            foreach (List<int> subTrack in tracks)
-            {
-               
-                List<Vector2f> realTrack = new List<Vector2f>();
-                foreach (var z in subTrack)
-                {
-                    realTrack.Add(vertices[z]);
-                }
-                possibleRealTracks.Add(realTrack);
-            }
+            Track trackClass = new Track(realTrack);
+            realTracks.Add(trackClass);
         }
-        
-        
 
-        Debug.Log("Finished finding cycles");
-    }
-
-    public void incrementTrack(int trackNumber)
-    {
-        if (possibleRealTracks != null)
-        {
-            this.track = possibleRealTracks[trackNumber];
-        }
-    }
-
-    private class VertexData
-    {
-        public int index;
-        public List<int> parentHistory;
-        public Nullable<int> stepFromHome;
-
-        public VertexData(int index)
-        {
-            this.index = index;
-            parentHistory = new List<int>();
-            stepFromHome = null;
-        }
+        return realTracks;
     }
 
     private List<List<int>> FindPossibleWays(int index)
@@ -252,14 +250,15 @@ public class CyclesFinder : MonoBehaviour
 
         for (int i = vertsToCheck.Count - 1; i > -1; i--)
         {
-
             List<int> neighbours = GetNeighbours(vertsToCheck[i]);
             VertexData checkedSubVert = vertexDatas[vertsToCheck[i]];
             if (checkedSubVert.parentHistory.Count == 0)
             {
                 continue;
             }
-            List<int> historyWithoutLast = checkedSubVert.parentHistory.GetRange(0, checkedSubVert.parentHistory.Count - 1);
+
+            List<int> historyWithoutLast =
+                checkedSubVert.parentHistory.GetRange(0, checkedSubVert.parentHistory.Count - 1);
 
             foreach (int neighbour in neighbours)
             {
@@ -268,6 +267,7 @@ public class CyclesFinder : MonoBehaviour
                 {
                     continue;
                 }
+
                 if (neighbourVertexData.parentHistory[0] == checkedVert.parentHistory[0]
                     && neighbourVertexData.parentHistory != historyWithoutLast)
                 {
@@ -279,20 +279,16 @@ public class CyclesFinder : MonoBehaviour
                     {
                         subResult.Add(vertsToCheck[j]);
                     }
-                    
-                    if(subResult.Count == subResult.Distinct().Count())
+
+                    if (subResult.Count == subResult.Distinct().Count())
                     {
                         results.Add(subResult);
                     }
-
                 }
             }
-            
-            
         }
 
         return results;
-
     }
 
     private int NumberOfConnections(int index)
@@ -328,6 +324,22 @@ public class CyclesFinder : MonoBehaviour
 
         return result;
     }
+
+
+    private class VertexData
+    {
+        public int index;
+        public List<int> parentHistory;
+        public Nullable<int> stepFromHome;
+
+        public VertexData(int index)
+        {
+            this.index = index;
+            parentHistory = new List<int>();
+            stepFromHome = null;
+        }
+    }
+
 
     private bool IsWithinThreshold(Vector2f a, Vector2f b, double threshold)
     {
